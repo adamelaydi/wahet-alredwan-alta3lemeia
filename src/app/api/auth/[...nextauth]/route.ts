@@ -1,0 +1,124 @@
+import { logApiError, publicApiClient } from "@/lib/api";
+import { UserEntity } from "@/types/auth";
+import { PaginatedResponse } from "@/types/config";
+import { Instructor } from "@/types/entities";
+import { jwtDecode } from "jwt-decode";
+import NextAuth, { AuthOptions } from "next-auth";
+import { JWT } from "next-auth/jwt";
+import CredentialsProvider from "next-auth/providers/credentials";
+
+export const authConfig: AuthOptions = {
+  providers: [
+    CredentialsProvider({
+      name: "credentials",
+      credentials: {
+        phone_number1: {},
+        password: {},
+      },
+      async authorize(credentials) {
+        const tokenRes = await publicApiClient.post<{
+          access: string;
+          refresh: string;
+        }>("/auth/jwt/create/", credentials);
+
+        const {
+          data: { access, refresh },
+        } = tokenRes;
+
+        if (!access || !refresh) return null;
+
+        const userRes = await publicApiClient.get<UserEntity>("/auth/users/me/", {
+          headers: {
+            Authorization: `JWT ${access}`,
+          },
+        });
+
+        const user: UserEntity = userRes.data;
+
+        const { exp } = jwtDecode(access);
+
+        if (!user) return null;
+
+        if (user.role === "instructor") {
+          const {
+            data: {
+              results: [{ id }],
+            },
+          } = await publicApiClient.get<PaginatedResponse<Instructor>>(
+            `/api/users/instructors/?user__phone_number1__icontains=${user.phone_number1}`,
+            {
+              headers: {
+                Authorization: `JWT ${access}`,
+              },
+            },
+          );
+
+          user.instructor_id = String(id);
+
+          console.log(id);
+        }
+
+        user.jwt_access_token = access;
+        user.jwt_refresh_token = refresh;
+        user.exp = exp || Date.now();
+
+        return user;
+      },
+    }),
+  ],
+  session: {
+    strategy: "jwt",
+  },
+
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) return { ...token, ...user };
+      const now = Date.now() / 1000;
+      const { exp } = token as JWT & UserEntity;
+      const tokenAgeLeft = Math.floor((exp || now) - now);
+      if (tokenAgeLeft <= 60) {
+        try {
+          const { jwt_refresh_token } = token as JWT & UserEntity;
+          const res = await publicApiClient.post<{ access: string }>(
+            "/auth/jwt/refresh/",
+            {
+              refresh: jwt_refresh_token,
+            },
+          );
+          const { data: { access } = {} } = res;
+          if (!access) throw new Error("Token Refreshment Failed!");
+          const { exp } = jwtDecode(access);
+          return { ...token, jwt_access_token: access, exp, error: undefined };
+        } catch (err) {
+          logApiError("Error Refreshing Token:", err);
+          return { ...token, error: "TokenRefreshmentError" };
+        }
+      }
+
+      return token;
+    },
+
+    async session({ session, token }) {
+      const {
+        sub,
+        iat,
+        jti,
+        exp,
+        jwt_access_token,
+        jwt_refresh_token,
+        ...user
+      } = token;
+      session.user = user;
+
+      return session;
+    },
+  },
+
+  pages: {
+    signIn: "/?login=true",
+  },
+};
+
+const handler = NextAuth(authConfig);
+
+export { handler as GET, handler as POST };

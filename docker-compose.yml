@@ -1,0 +1,26 @@
+services:
+  app:
+    develop:
+      watch:
+        - path: .
+          action: sync
+          target: /app
+
+        - path: ./package.json
+          action: rebuild
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    environment:
+      - NODE_ENV=development
+      - npm_config_store_dir=/app/.pnpm-store
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+      - ./.pnpm-store:/app/.pnpm-store
